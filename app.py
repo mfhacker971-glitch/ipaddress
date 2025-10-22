@@ -1,25 +1,50 @@
 # requirements: flask, gspread, oauth2client
 # pip install flask gspread oauth2client
 
-from flask import Flask, request, render_template_string, redirect, url_for
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from flask import Flask, request, render_template_string
+import gspread, os, json
 from datetime import datetime
 
 app = Flask(__name__)
 
 # --- Configure Google Sheets ---
-# 1) Create a Google Service Account and download JSON key file.
-# 2) Share your Google Sheet with the service account email (edit access).
-SCOPE = ['https://spreadsheets.google.com/feeds','https://www.googleapis.com/auth/drive']
-CREDS_FILE = 'service-account.json'   # place your downloaded key here
-SPREADSHEET_NAME = 'ClickLogs'       # create this sheet beforehand
+# Render (or any cloud) ke liye hum GOOGLE_CREDS environment variable use karenge.
+# Isme tum poori service-account.json content paste karoge (Render Environment Variables me).
 
-gc = gspread.service_account(filename=CREDS_FILE)
-sh = gc.open(SPREADSHEET_NAME)
-ws = sh.sheet1
+SCOPE = [
+    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/drive"
+]
+SPREADSHEET_NAME = "ClickLogs"  # Google Sheet ka naam (pehle se create hona chahiye)
 
-# --- Landing page with consent ---
+creds_env = os.environ.get("GOOGLE_CREDS")
+gc = None
+
+if creds_env:
+    try:
+        # agar environment variable me pura JSON hai:
+        creds_dict = json.loads(creds_env)
+        gc = gspread.service_account_from_dict(creds_dict)
+        print("[INFO] Google service account authenticated from environment variable.")
+    except Exception as e:
+        print("[ERROR] Failed to load creds from GOOGLE_CREDS:", e)
+else:
+    # fallback: agar local me run kar rahe ho aur file available hai
+    CREDS_FILE = "service-account.json"
+    if os.path.exists(CREDS_FILE):
+        gc = gspread.service_account(filename=CREDS_FILE)
+        print("[INFO] Authenticated using local service-account.json")
+    else:
+        raise RuntimeError("Google credentials not found. Set GOOGLE_CREDS env variable or upload service-account.json.")
+
+# open spreadsheet
+try:
+    sh = gc.open(SPREADSHEET_NAME)
+    ws = sh.sheet1
+except Exception as e:
+    raise RuntimeError(f"Failed to open Google Sheet '{SPREADSHEET_NAME}': {e}")
+
+# --- Landing page (same design you had) ---
 CONSENT_HTML = """
 <!doctype html>
 <html lang="en">
@@ -36,7 +61,6 @@ CONSENT_HTML = """
     body{margin:0;min-height:100vh;background:linear-gradient(180deg,#100020 0%, #1e0038 60%);color:#f3e8ff;display:flex;align-items:center;justify-content:center;padding:40px}
     .wrap{width:100%;max-width:var(--max-w);background:linear-gradient(180deg,rgba(255,255,255,0.02), var(--card));border-radius:14px;box-shadow:0 10px 30px rgba(20,0,40,0.7);padding:28px;}
     header{display:flex;gap:16px;align-items:center}
-    .logo{width:56px;height:56px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:18px;text-shadow:0 0 5px rgba(0,0,0,0.3)}
     h1{margin:0;font-size:28px;letter-spacing:-0.4px}
     .sub{color:var(--muted);margin-top:6px}
     .hero{display:flex;gap:28px;margin-top:20px;align-items:center}
@@ -58,7 +82,6 @@ CONSENT_HTML = """
 <body>
   <main class="wrap" role="main">
     <header>
-     
       <div>
         <h1>PhinexIntra — <span style="color:var(--accent2)">You have been phished</span></h1>
         <div class="sub">Awareness exercise • Phishing campaign result</div>
@@ -72,11 +95,6 @@ CONSENT_HTML = """
         <p>
           Our awareness campaign detected that this account interacted with a simulated phishing message. This exercise is part of our continuous effort to build a strong security culture and help you recognize real phishing attempts.
         </p>
-
-        <p>
-          What happens next: you will be enrolled in a short learning path on our LMS, including a video walkthrough, gamified micro-lessons, and a final quiz to test your knowledge.
-        </p>
-
         <ul class="small-list">
           <li>Watch a short <strong>training video</strong> on the LMS.</li>
           <li>Complete <strong>interactive gamified learning</strong> modules.</li>
@@ -108,36 +126,28 @@ CONSENT_HTML = """
 
   <script>
     document.getElementById('year').textContent = new Date().getFullYear();
-    document.getElementById('start-btn').addEventListener('click', function(e){
-      e.preventDefault();
-      window.location.href = '/lms/enroll?campaign=phishing-awareness';
-    });
-    document.getElementById('report-btn').addEventListener('click', function(e){
-      e.preventDefault();
-      window.location.href = 'mailto:security@phinexintra.local?subject=Report%20Phishing%20Incident';
-    });
   </script>
 </body>
 </html>
 """
 
-@app.route('/', methods=['GET'])
+@app.route('/')
 def index():
     return render_template_string(CONSENT_HTML)
 
 @app.route('/log', methods=['POST'])
 def log():
-    # get IP (Flask provides remote_addr) — beware of proxies; adjust if behind reverse proxy
     ip = request.remote_addr or ''
     ua = request.headers.get('User-Agent', '')
     ts = datetime.utcnow().isoformat()
-    # Save to Google Sheet
+
     try:
         ws.append_row([ts, ip, ua])
+        print(f"[LOGGED] {ip} — {ua}")
+        return "<h3>✅ Your visit was recorded successfully.</h3>"
     except Exception as e:
         print("Sheet append error:", e)
-    # redirect or show a success page
-    return "<h3>Thanks — your consent recorded. You may now continue.</h3>"
+        return f"<h3>⚠️ Logging failed: {e}</h3>"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
